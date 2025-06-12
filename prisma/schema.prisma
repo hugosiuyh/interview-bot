@@ -1,0 +1,92 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Interview {
+  id          String   @id @default(cuid())
+  candidateName String?
+  candidateEmail String?
+  startTime   DateTime @default(now())
+  endTime     DateTime?
+  status      String   @default("in_progress") // in_progress, completed, abandoned
+  videoUrl    String?
+  audioUrl    String?
+  totalDuration Int?   // in seconds
+  
+  // Scoring results
+  complianceScore     Float?
+  stressToleranceScore Float?
+  assertivenessScore  Float?
+  flexibilityScore    Float?
+  responsibilityScore Float?
+  
+  // Recommendations
+  overallRecommendation String? // recommend, consider, not_recommended
+  jobFitAnalysis       String?
+  
+  // Relations
+  messages    Message[]
+  scores      Score[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("interviews")
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  interviewId String
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  
+  from        String   // "bot" or "user"
+  text        String
+  timestamp   DateTime @default(now())
+  questionId  String?  // Reference to which question this was
+  
+  // Video/Audio metadata
+  videoTimestamp Float? // seconds from start of interview
+  audioTimestamp Float?
+  
+  createdAt DateTime @default(now())
+  
+  @@map("messages")
+}
+
+model Score {
+  id          String   @id @default(cuid())
+  interviewId String
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  
+  trait       String   // compliance, stress_tolerance, assertiveness, etc.
+  score       Float
+  rationale   String
+  quotes      String   // JSON array of relevant quotes
+  confidence  Float?   // AI confidence in the score
+  
+  createdAt DateTime @default(now())
+  
+  @@map("scores")
+}
+
+model Question {
+  id          String   @id @default(cuid())
+  order       Int
+  category    String   // motivation, logistics, stress_management, etc.
+  question    String
+  traits      String   // JSON array of traits this question tests
+  isActive    Boolean  @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("questions")
+} 
