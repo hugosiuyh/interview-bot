@@ -16,9 +16,7 @@ from flask_cors import CORS
 import tempfile
 import os
 import logging
-
-# Uncomment when ready to use real Whisper
-# from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel
 
 app = Flask(__name__)
 CORS(app)
@@ -27,8 +25,8 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Whisper model (comment out for now)
-# model = WhisperModel("base", device="cpu", compute_type="int8")
+# Initialize Whisper model
+model = WhisperModel("base", device="cpu", compute_type="int8")
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -58,29 +56,25 @@ def transcribe_audio():
             temp_file_path = temp_file.name
 
         try:
-            # TODO: Uncomment for real Whisper transcription
-            # segments, info = model.transcribe(temp_file_path, beam_size=5)
-            # result = []
-            # for segment in segments:
-            #     result.append({
-            #         "start": f"{int(segment.start // 60):02d}:{int(segment.start % 60):02d}:{int((segment.start % 1) * 100):02d}",
-            #         "end": f"{int(segment.end // 60):02d}:{int(segment.end % 60):02d}:{int((segment.end % 1) * 100):02d}",
-            #         "text": segment.text.strip()
-            #     })
-
-            # Mock response for now
-            result = [
-                {
-                    "start": "00:00:00",
-                    "end": "00:00:08",
-                    "text": "I applied to Momentum because I'm passionate about helping others achieve their goals."
-                },
-                {
-                    "start": "00:00:08", 
-                    "end": "00:00:15",
-                    "text": "I believe in the power of coaching and want to make a meaningful impact."
-                }
-            ]
+            # Real Whisper transcription
+            segments, info = model.transcribe(
+                temp_file_path,
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters=dict(
+                    min_silence_duration_ms=500,  # Minimum silence duration to split segments
+                    speech_pad_ms=400,  # Add padding to speech segments
+                )
+            )
+            
+            result = []
+            for segment in segments:
+                # Format timestamps as seconds from start
+                result.append({
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text.strip()
+                })
             
             logger.info(f"Transcribed audio file: {audio_file.filename}")
             return jsonify(result)
@@ -110,4 +104,4 @@ if __name__ == '__main__':
     logger.info("  POST /transcribe - Audio transcription")
     logger.info("  GET  /models - List available models")
     
-    app.run(host='0.0.0.0', port=5000, debug=True) 
+    app.run(host='0.0.0.0', port=5001, debug=True) 

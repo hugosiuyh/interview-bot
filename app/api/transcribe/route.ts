@@ -1,39 +1,50 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const WHISPER_SERVICE_URL = process.env.WHISPER_SERVICE_URL || 'http://localhost:5001';
+
 export async function POST(request: NextRequest) {
+  console.log('[Transcribe API] Received transcription request');
+  
   try {
     const formData = await request.formData();
     const audioFile = formData.get('audio') as File;
     
     if (!audioFile) {
+      console.warn('[Transcribe API] No audio file provided');
       return NextResponse.json({ error: 'No audio file provided' }, { status: 400 });
     }
 
-    // Mock processing delay to simulate real transcription
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    console.log(`[Transcribe API] Processing audio file: ${audioFile.size} bytes`);
 
-    // Mock transcript responses - in real implementation, this would call Whisper
-    const mockTranscripts = [
-      [
-        { start: "00:00:00", end: "00:00:08", text: "I applied to Momentum because I'm passionate about helping others achieve their goals and I believe in the power of coaching." },
-        { start: "00:00:08", end: "00:00:15", text: "I have experience managing multiple projects and I'm confident I can handle 6-12 weekly sessions effectively." }
-      ],
-      [
-        { start: "00:00:00", end: "00:00:10", text: "I chose Momentum because your company's mission aligns with my values of personal growth and development." },
-        { start: "00:00:10", end: "00:00:18", text: "For managing multiple sessions, I would use a structured scheduling system and prioritize clear communication." }
-      ],
-      [
-        { start: "00:00:00", end: "00:00:12", text: "Momentum's focus on empowering individuals really resonates with me, and I want to be part of that impact." },
-        { start: "00:00:12", end: "00:00:20", text: "I'd manage the workload by creating detailed session plans and maintaining organized client records." }
-      ]
-    ];
+    // Forward the audio file to the Whisper service
+    const whisperFormData = new FormData();
+    whisperFormData.append('audio', audioFile);
 
-    // Random selection for variety
-    const randomTranscript = mockTranscripts[Math.floor(Math.random() * mockTranscripts.length)];
+    console.log(`[Transcribe API] Sending request to Whisper service at ${WHISPER_SERVICE_URL}`);
     
-    return NextResponse.json(randomTranscript);
+    const response = await fetch(`${WHISPER_SERVICE_URL}/transcribe`, {
+      method: 'POST',
+      body: whisperFormData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('[Transcribe API] Whisper service error:', error);
+      throw new Error(error.error || 'Transcription service error');
+    }
+
+    const transcript = await response.json();
+    console.log('[Transcribe API] Successfully received transcript:', 
+      transcript.map((t: any) => ({ 
+        text: t.text.substring(0, 50) + (t.text.length > 50 ? '...' : ''),
+        duration: t.end - t.start 
+      }))
+    );
+    
+    return NextResponse.json(transcript);
+    
   } catch (error) {
-    console.error('Transcription error:', error);
+    console.error('[Transcribe API] Error:', error);
     return NextResponse.json({ error: 'Transcription failed' }, { status: 500 });
   }
 } 

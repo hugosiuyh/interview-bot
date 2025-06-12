@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
 interface AnalysisResult {
   needsFollowUp: boolean;
   followUpQuestion?: string;
@@ -9,24 +11,93 @@ interface AnalysisResult {
 }
 
 export async function POST(request: NextRequest) {
+  console.log('[Analyze API] Received response analysis request');
+  
   try {
     const { response, questionId, questionText } = await request.json();
     
     if (!response || !questionId || !questionText) {
+      console.warn('[Analyze API] Missing required fields:', { 
+        response: !!response, 
+        questionId: !!questionId, 
+        questionText: !!questionText 
+      });
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Analyze response depth
-    const analysis = analyzeResponseDepth(response, questionId, questionText);
-    
-    return NextResponse.json(analysis);
+    console.log('[Analyze API] Analyzing response:', {
+      questionId,
+      responseLength: response.length,
+      questionLength: questionText.length
+    });
+
+    // If no API key, fallback to mock
+    if (!OPENAI_API_KEY) {
+      // Simple mock: require follow-up if no example phrase
+      const hasExample = /for example|for instance|such as|i remember|one time|when i worked|i had a situation|once i|i dealt with|i handled|i managed|i faced|i encountered|i worked with/i.test(response);
+      return NextResponse.json({
+        isFollowUp: !hasExample,
+        followUpQuestion: !hasExample ? 'Can you give a specific example to illustrate your answer?' : undefined
+      });
+    }
+
+    // Compose prompt for GPT
+    const prompt = `You are an expert interview coach. Given the candidate's answer and the question, decide if a follow-up is needed to get a more in-depth or specific response. If so, generate a follow-up question that will help the candidate provide a concrete example or more detail. Respond in this JSON format:
+
+{
+  "isFollowUp": true/false,
+  "followUpQuestion": "..." // Only if isFollowUp is true
+}
+
+Question: ${questionText}
+Candidate's Answer: ${response}
+
+JSON:`;
+
+    const gptRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: 'You are an expert interview coach.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.3,
+        max_tokens: 200
+      })
+    });
+
+    const gptData = await gptRes.json();
+    let gptText = '';
+    try {
+      gptText = gptData.choices[0].message.content.trim();
+      // Extract JSON from GPT response
+      const match = gptText.match(/\{[\s\S]*\}/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        return NextResponse.json(parsed);
+      }
+    } catch (e) {
+      // fallback below
+    }
+
+    // Fallback: if GPT response is not valid JSON
+    return NextResponse.json({
+      isFollowUp: false
+    });
   } catch (error) {
-    console.error('Analysis error:', error);
+    console.error('[Analyze API] Error analyzing response:', error);
     return NextResponse.json({ error: 'Analysis failed' }, { status: 500 });
   }
 }
 
 function analyzeResponseDepth(response: string, questionId: string, questionText: string): AnalysisResult {
+  console.log('[Analyze API] Starting depth analysis');
+  
   const responseLength = response.trim().length;
   const hasExample = detectExample(response);
   const isDetailed = responseLength >= 100; // Minimum 100 characters for detailed response

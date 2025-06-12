@@ -1,5 +1,5 @@
 'use client';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { INTERVIEW_QUESTIONS, getRecommendation } from '@/utils/questions';
 
 interface Message {
@@ -24,14 +24,7 @@ export default function InterviewPage() {
   // Core state
   const [interviewId, setInterviewId] = useState<string>('');
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [messages, setMessages] = useState<Message[]>([
-    { 
-      from: 'bot', 
-      text: INTERVIEW_QUESTIONS[0].question, 
-      timestamp: new Date().toISOString(),
-      questionId: INTERVIEW_QUESTIONS[0].id
-    }
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [interviewStatus, setInterviewStatus] = useState<'active' | 'completed' | 'generating_report'>('active');
   
   // Voice recording and transcription
@@ -42,6 +35,12 @@ export default function InterviewPage() {
   const [autoTranscribeEnabled, setAutoTranscribeEnabled] = useState(true);
   const [speechTimeout, setSpeechTimeout] = useState<NodeJS.Timeout | null>(null);
   const [isProcessingResponse, setIsProcessingResponse] = useState(false);
+  const [lastProcessedChunkTime, setLastProcessedChunkTime] = useState<number>(0);
+  const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
+  const [audioAnalyser, setAudioAnalyser] = useState<AnalyserNode | null>(null);
+  const [silenceThreshold] = useState(-45); // dB
+  const [silenceDuration] = useState(1000); // ms
+  const [lastSoundTime, setLastSoundTime] = useState<number>(Date.now());
   
   // Scoring and reporting
   const [scores, setScores] = useState<ScoreData | null>(null);
@@ -60,6 +59,11 @@ export default function InterviewPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const currentTranscriptionRef = useRef<string>('');
 
+  // Typing effect for Lily's messages
+  const [typingIndex, setTypingIndex] = useState<number | null>(null);
+  const [typingText, setTypingText] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+
   // Initialize interview
   useEffect(() => {
     if (!interviewId) {
@@ -68,18 +72,88 @@ export default function InterviewPage() {
     }
   }, [interviewId]);
 
+  // Add Lily's intro messages one by one on mount
+  useEffect(() => {
+    if (messages.length === 0) {
+      const introMsgs = [
+        "Hi! I'm Lily, your AI interviewer. Nice to meet you! 😊",
+        "I'm going to ask you a few questions to get to know you better. This interview is untimed and you can take your time with each response.",
+        "When you've finished, I'll provide you with insights to help you in your job search. Are you ready to begin?",
+        INTERVIEW_QUESTIONS[0].question
+      ];
+      let i = 0;
+      const addNext = () => {
+        if (i < introMsgs.length) {
+          addBotMessage({
+            from: 'bot',
+            text: introMsgs[i],
+            timestamp: new Date().toISOString(),
+            questionId: i === 3 ? INTERVIEW_QUESTIONS[0].id : undefined
+          });
+          i++;
+          setTimeout(addNext, 5000);
+        }
+      };
+      addNext();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Initialize audio context for voice activity detection
+  useEffect(() => {
+    if (!audioContext) {
+      const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+      setAudioContext(context);
+    }
+    return () => {
+      if (audioContext) {
+        audioContext.close();
+      }
+    };
+  }, []);
+
+  const detectSilence = useCallback((analyser: AnalyserNode, dataArray: Float32Array) => {
+    analyser.getFloatTimeDomainData(dataArray);
+    
+    // Calculate RMS value
+    let rms = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      rms += dataArray[i] * dataArray[i];
+    }
+    rms = Math.sqrt(rms / dataArray.length);
+    
+    // Convert to dB
+    const db = 20 * Math.log10(rms);
+    
+    if (db > silenceThreshold) {
+      setLastSoundTime(Date.now());
+      return false;
+    }
+    
+    return (Date.now() - lastSoundTime) > silenceDuration;
+  }, [silenceThreshold, silenceDuration, lastSoundTime]);
+
   const startInterview = () => {
     if (!candidateName.trim()) {
       alert('Please enter candidate name');
       return;
     }
+    
     setShowCandidateForm(false);
     setInterviewStartTime(Date.now());
-    startContinuousRecording();
+    
+    // Small delay to ensure UI is ready, then start recording
+    setTimeout(() => {
+      startContinuousRecording();
+    }, 500);
   };
 
   const startContinuousRecording = async () => {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('MediaDevices not supported');
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: true, 
         audio: {
@@ -96,31 +170,76 @@ export default function InterviewPage() {
         videoRef.current.play();
       }
 
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
-      
+      // Set up audio analysis
+      if (audioContext) {
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+        source.connect(analyser);
+        setAudioAnalyser(analyser);
+      }
+
+      const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       mediaChunksRef.current = [];
 
-      mediaRecorder.ondataavailable = (event) => {
+      let silenceStart: number | null = null;
+      const dataArray = new Float32Array(2048);
+
+      mediaRecorder.ondataavailable = async (event) => {
         if (event.data.size > 0) {
           mediaChunksRef.current.push(event.data);
           
-          // Auto-transcribe when we have enough data and auto-transcribe is enabled
-          if (autoTranscribeEnabled && mediaChunksRef.current.length >= 3) {
-            processAudioChunk();
+          // Check for voice activity if we have the analyser
+          if (audioAnalyser && autoTranscribeEnabled) {
+            const isSilent = detectSilence(audioAnalyser, dataArray);
+            
+            if (!isSilent) {
+              silenceStart = null;
+              
+              // Process chunk if we have enough data and enough time has passed
+              const now = Date.now();
+              if (mediaChunksRef.current.length >= 3 && 
+                  now - lastProcessedChunkTime > 2000) { // At least 2 seconds between processing
+                await processAudioChunk();
+                setLastProcessedChunkTime(now);
+              }
+            } else if (!silenceStart) {
+              silenceStart = Date.now();
+            } else if (Date.now() - silenceStart > silenceDuration) {
+              // If we've been silent for long enough, process what we have
+              if (mediaChunksRef.current.length > 0) {
+                await processAudioChunk();
+                setLastProcessedChunkTime(Date.now());
+              }
+              mediaChunksRef.current = []; // Clear chunks after processing
+            }
           }
         }
       };
 
-      mediaRecorder.start(2000); // Collect data every 2 seconds
+      mediaRecorder.start(500); // Collect data every 500ms
       setIsRecording(true);
       setRecordingStartTime(Date.now());
       
     } catch (error) {
       console.error('Error starting recording:', error);
-      alert('Error accessing camera/microphone. Please check permissions.');
+      
+      if (error instanceof DOMException) {
+        if (error.name === 'NotAllowedError') {
+          alert('🎥 Camera and microphone access is required for this interview.\n\n📋 To fix this:\n1. Look for the camera/microphone icon in your browser\'s address bar\n2. Click it and select "Allow"\n3. Refresh the page and try again');
+        } else if (error.name === 'NotFoundError') {
+          alert('🔍 No camera or microphone detected.\n\n📋 Please check:\n1. Your camera and microphone are connected\n2. They are not being used by another application\n3. Try refreshing the page');
+        } else if (error.name === 'NotReadableError') {
+          alert('📷 Your camera or microphone is already in use by another application.\n\n📋 Please:\n1. Close other video calling apps (Zoom, Teams, etc.)\n2. Refresh this page and try again');
+        } else {
+          alert('⚠️ Error accessing your camera/microphone.\n\n📋 Please:\n1. Ensure you\'re using Chrome, Firefox, or Safari\n2. Check that your browser is up to date\n3. Refresh the page and try again');
+        }
+      } else if (error instanceof Error && error.message === 'MediaDevices not supported') {
+        alert('🌐 Your browser doesn\'t support video recording.\n\n📋 Please:\n1. Use Chrome, Firefox, or Safari\n2. Ensure your browser is updated to the latest version\n3. Try again');
+      } else {
+        alert('⚠️ Unexpected error accessing camera/microphone.\n\n📋 Please:\n1. Refresh the page\n2. Grant permissions when prompted\n3. Contact support if the issue persists');
+      }
     }
   };
 
@@ -129,44 +248,52 @@ export default function InterviewPage() {
     
     setIsTranscribing(true);
     
-    // Create audio blob from recent chunks
-    const audioBlob = new Blob(mediaChunksRef.current, { type: 'audio/webm' });
-    const formData = new FormData();
-    formData.append('audio', audioBlob);
-
     try {
+      // Create audio blob from chunks
+      const audioBlob = new Blob(mediaChunksRef.current, { type: 'audio/webm' });
+      const formData = new FormData();
+      formData.append('audio', audioBlob);
+
       const response = await fetch('/api/transcribe', {
         method: 'POST',
         body: formData,
       });
       
+      if (!response.ok) {
+        throw new Error('Transcription failed');
+      }
+      
       const transcript = await response.json();
       
-      if (transcript.length > 0 && transcript[0].text.trim()) {
-        const transcribedText = transcript[0].text.trim();
-        
-        // Check if this is new content (not just repeated)
-        if (transcribedText !== currentTranscriptionRef.current && 
-            transcribedText.length > 10) {
+      // Process each segment
+      for (const segment of transcript) {
+        if (segment.text.trim()) {
+          const transcribedText = segment.text.trim();
           
-          currentTranscriptionRef.current = transcribedText;
-          
-          // Clear timeout if user is still speaking
-          if (speechTimeout) {
-            clearTimeout(speechTimeout);
+          // Only process if this is new content
+          if (transcribedText !== currentTranscriptionRef.current && 
+              transcribedText.length > 10) {
+            
+            currentTranscriptionRef.current = transcribedText;
+            
+            // Clear timeout if user is still speaking
+            if (speechTimeout) {
+              clearTimeout(speechTimeout);
+            }
+            
+            // Set timeout to send response after user stops speaking
+            const timeout = setTimeout(() => {
+              const videoTimestamp = segment.start; // Use segment start time
+              handleTranscribedResponse(transcribedText, videoTimestamp);
+            }, 2000); // Wait 2 seconds after last speech
+            
+            setSpeechTimeout(timeout);
           }
-          
-          // Set timeout to send response after user stops speaking
-          const timeout = setTimeout(() => {
-            handleTranscribedResponse(transcribedText);
-          }, 3000); // Wait 3 seconds after last speech
-          
-          setSpeechTimeout(timeout);
         }
       }
       
-      // Clear processed chunks but keep the last few for continuity
-      mediaChunksRef.current = mediaChunksRef.current.slice(-2);
+      // Keep the last chunk for context
+      mediaChunksRef.current = mediaChunksRef.current.slice(-1);
       
     } catch (error) {
       console.error('Transcription error:', error);
@@ -175,17 +302,15 @@ export default function InterviewPage() {
     }
   };
 
-  const handleTranscribedResponse = async (transcribedText: string) => {
+  const handleTranscribedResponse = async (transcribedText: string, videoTimestamp: number) => {
     if (isProcessingResponse) return;
     
     setIsProcessingResponse(true);
-    const currentTime = Date.now();
-    const videoTimestamp = (currentTime - interviewStartTime) / 1000;
     
     const userMessage: Message = {
       from: 'user',
       text: transcribedText,
-      timestamp: new Date(currentTime).toISOString(),
+      timestamp: new Date().toISOString(),
       questionId: INTERVIEW_QUESTIONS[currentQuestionIndex].id,
       videoTimestamp
     };
@@ -232,35 +357,45 @@ export default function InterviewPage() {
           videoTimestamp: (Date.now() - interviewStartTime) / 1000,
           isFollowUp: true
         };
-      } else {
-        // Move to next question or end interview
-        if (questionIndex < INTERVIEW_QUESTIONS.length - 1) {
-          const nextQuestionIndex = questionIndex + 1;
-          setCurrentQuestionIndex(nextQuestionIndex);
-          
-          botMessage = {
-            from: 'bot',
-            text: INTERVIEW_QUESTIONS[nextQuestionIndex].question,
-            timestamp: new Date().toISOString(),
-            questionId: INTERVIEW_QUESTIONS[nextQuestionIndex].id,
-            videoTimestamp: (Date.now() - interviewStartTime) / 1000
-          };
-        } else {
-          // Interview complete
-          botMessage = {
-            from: 'bot',
-            text: "Thank you for completing the interview! I'm now generating your assessment report...",
-            timestamp: new Date().toISOString(),
-            videoTimestamp: (Date.now() - interviewStartTime) / 1000
-          };
-          
-          setTimeout(() => {
-            endInterview();
-          }, 2000);
+              } else {
+          // Move to next question or end interview
+          if (questionIndex < INTERVIEW_QUESTIONS.length - 1) {
+            const nextQuestionIndex = questionIndex + 1;
+            setCurrentQuestionIndex(nextQuestionIndex);
+            
+            const transitionPhrases = [
+              "Great! Thanks for sharing that. ",
+              "That's really helpful to know. ",
+              "Perfect, I appreciate that insight. ",
+              "Wonderful! That gives me a good understanding. ",
+              "Thanks for the detailed response. "
+            ];
+            
+            const randomTransition = transitionPhrases[Math.floor(Math.random() * transitionPhrases.length)];
+            
+            botMessage = {
+              from: 'bot',
+              text: randomTransition + INTERVIEW_QUESTIONS[nextQuestionIndex].question,
+              timestamp: new Date().toISOString(),
+              questionId: INTERVIEW_QUESTIONS[nextQuestionIndex].id,
+              videoTimestamp: (Date.now() - interviewStartTime) / 1000
+            };
+          } else {
+            // Interview complete
+            botMessage = {
+              from: 'bot',
+              text: "Fantastic! You've completed all my questions. Thank you so much for taking the time to share your thoughts with me. I'm now analyzing your responses and generating your personalized assessment report... ✨",
+              timestamp: new Date().toISOString(),
+              videoTimestamp: (Date.now() - interviewStartTime) / 1000
+            };
+            
+            setTimeout(() => {
+              endInterview();
+            }, 2000);
+          }
         }
-      }
       
-      setMessages(prev => [...prev, botMessage]);
+      addBotMessage(botMessage);
       await saveMessage(botMessage);
       
     } catch (error) {
@@ -282,7 +417,7 @@ export default function InterviewPage() {
         questionId: INTERVIEW_QUESTIONS[nextQuestionIndex].id,
         videoTimestamp: (Date.now() - interviewStartTime) / 1000
       };
-      setMessages(prev => [...prev, botMessage]);
+      addBotMessage(botMessage);
       setCurrentQuestionIndex(nextQuestionIndex);
       saveMessage(botMessage);
     } else {
@@ -394,7 +529,7 @@ export default function InterviewPage() {
       case 'recommend': return 'text-green-600 bg-green-100';
       case 'consider': return 'text-yellow-600 bg-yellow-100';
       case 'not_recommended': return 'text-red-600 bg-red-100';
-      default: return 'text-gray-600 bg-gray-100';
+      default: return 'text-gray-900 bg-gray-100';
     }
   };
 
@@ -407,14 +542,19 @@ export default function InterviewPage() {
     }
   };
 
+  // When adding a bot message, just add it directly (no animation)
+  const addBotMessage = (msg: Message) => {
+    setMessages((prev) => [...prev, msg]);
+  };
+
   if (showCandidateForm) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-lg p-8 max-w-md w-full">
-          <h1 className="text-2xl font-bold text-center mb-6">Momentum Interview</h1>
+          <h1 className="text-2xl text-black font-bold text-center mb-6">Momentum Interview</h1>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-medium text-black mb-2">
                 Candidate Name *
               </label>
               <input
@@ -426,7 +566,7 @@ export default function InterviewPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-medium text-black mb-2">
                 Email (Optional)
               </label>
               <input
@@ -437,12 +577,20 @@ export default function InterviewPage() {
                 placeholder="Enter email address"
               />
             </div>
-            <div className="bg-blue-50 p-3 rounded-lg">
+                        <div className="bg-blue-50 p-3 rounded-lg">
               <p className="text-sm text-blue-800">
                 📹 This interview will be recorded with automatic transcription
               </p>
-              <p className="text-xs text-blue-600 mt-1">
+              <p className="text-xs text-blue-800 mt-1">
                 AI will analyze your responses and ask follow-up questions when needed
+              </p>
+            </div>
+            <div className="bg-yellow-50 border border-yellow-200 p-3 rounded-lg">
+              <p className="text-sm text-yellow-800 font-medium">
+                📋 Before we start:
+              </p>
+              <p className="text-xs text-yellow-700 mt-1">
+                Your browser will ask for camera and microphone permissions. Please click "Allow" to continue with the interview.
               </p>
             </div>
             <button
@@ -488,27 +636,54 @@ export default function InterviewPage() {
         </div>
 
         <div className="grid grid-cols-12 gap-6">
-          {/* Chat Interface - Left Side */}
-          <div className="col-span-7 bg-white rounded-lg shadow-sm p-6">
-            <h3 className="font-medium mb-4">Interview Conversation</h3>
-            <div className="space-y-4 h-96 overflow-y-auto bg-gray-50 rounded-lg p-4 mb-4">
-              {messages.map((msg, i) => (
-                <div key={i} className={`${msg.from === 'bot' ? 'text-left' : 'text-right'}`}>
-                  <div className={`inline-block max-w-md px-4 py-3 rounded-lg ${
-                    msg.from === 'bot' 
-                      ? msg.isFollowUp 
-                        ? 'bg-yellow-500 text-white'
-                        : 'bg-blue-500 text-white' 
-                      : 'bg-gray-200 text-gray-800'
-                  }`}>
-                    <p className="text-sm">{msg.text}</p>
-                                         <span className="text-xs text-gray-800 block mt-1">
+                     {/* Chat Interface - Left Side */}
+           <div className="col-span-7 bg-white rounded-lg shadow-sm p-6">
+             <div className="flex items-center gap-3 mb-4 pb-3 border-b border-gray-200">
+               <img 
+                 src="/avatar.png" 
+                 alt="Lily - AI Interviewer" 
+                 className="w-10 h-10 rounded-full border-2 border-blue-200"
+               />
+               <div>
+                 <h3 className="font-medium text-gray-900">Chat with Lily</h3>
+                 <p className="text-sm text-green-600 flex items-center">
+                   <span className="w-2 h-2 bg-green-500 rounded-full mr-2"></span>
+                   Online now
+                 </p>
+               </div>
+             </div>
+                         <div className="space-y-4 h-96 overflow-y-auto bg-gray-50 rounded-lg p-4 mb-4">
+               {messages.map((msg, i) => (
+                 <div key={i} className={`flex items-start gap-3 ${msg.from === 'user' ? 'flex-row-reverse' : ''}`}>
+                   {msg.from === 'bot' && (
+                     <div className="flex-shrink-0">
+                       <img 
+                         src="/avatar.png" 
+                         alt="Lily - AI Interviewer" 
+                         className="w-8 h-8 rounded-full border-2 border-blue-200"
+                       />
+                     </div>
+                   )}
+                   <div className={`max-w-md px-4 py-3 rounded-lg ${
+                     msg.from === 'bot' 
+                       ? msg.isFollowUp 
+                         ? 'bg-yellow-500 text-white rounded-tl-none'
+                         : 'bg-blue-500 text-white rounded-tl-none' 
+                       : 'bg-gray-200 text-gray-800 rounded-tr-none'
+                   }`}>
+                     {msg.from === 'bot' && i === 0 && (
+                       <p className="text-xs text-blue-100 mb-1 font-medium">Lily • AI Interviewer</p>
+                     )}
+                     <p className="text-sm">{msg.text}</p>
+                     <span className={`text-xs block mt-1 ${
+                       msg.from === 'bot' ? 'text-blue-100' : 'text-gray-600'
+                     }`}>
                        {formatTimestamp(msg.timestamp)}
                        {msg.isFollowUp && ' (Follow-up)'}
                      </span>
-                  </div>
-                </div>
-              ))}
+                   </div>
+                 </div>
+               ))}
               
               {isProcessingResponse && (
                                  <div className="text-center">
@@ -519,34 +694,44 @@ export default function InterviewPage() {
               )}
             </div>
 
-            {/* Transcription Status */}
-            {interviewStatus === 'active' && (
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center">
-                    <div className={`w-3 h-3 rounded-full mr-2 ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-gray-400'}`}></div>
-                    <span className="text-sm text-blue-800">
-                      {isRecording ? 'Recording and listening...' : 'Recording paused'}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => setAutoTranscribeEnabled(!autoTranscribeEnabled)}
-                    className={`text-xs px-2 py-1 rounded ${
-                      autoTranscribeEnabled 
-                        ? 'bg-blue-600 text-white' 
-                        : 'bg-gray-300 text-gray-600'
-                    }`}
-                  >
-                    Auto-transcribe: {autoTranscribeEnabled ? 'ON' : 'OFF'}
-                  </button>
-                </div>
-                {currentTranscriptionRef.current && (
-                  <p className="text-xs text-blue-600 mt-2 italic">
-                    Current: "{currentTranscriptionRef.current}"
-                  </p>
-                )}
-              </div>
-            )}
+                         {/* Transcription Status */}
+             {interviewStatus === 'active' && (
+               <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                 <div className="flex items-center justify-between">
+                   <div className="flex items-center">
+                     <div className={`w-3 h-3 rounded-full mr-2 ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-gray-400'}`}></div>
+                     <span className="text-sm text-blue-800">
+                       {isRecording ? 'Recording and listening...' : 'Recording paused'}
+                     </span>
+                   </div>
+                   <div className="flex gap-2">
+                     {!isRecording && (
+                       <button
+                         onClick={startContinuousRecording}
+                         className="text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700"
+                       >
+                         🎥 Start Recording
+                       </button>
+                     )}
+                     <button
+                       onClick={() => setAutoTranscribeEnabled(!autoTranscribeEnabled)}
+                       className={`text-xs px-2 py-1 rounded ${
+                         autoTranscribeEnabled 
+                           ? 'bg-blue-600 text-white' 
+                           : 'bg-gray-300 text-gray-900'
+                       }`}
+                     >
+                       Auto-transcribe: {autoTranscribeEnabled ? 'ON' : 'OFF'}
+                     </button>
+                   </div>
+                 </div>
+                 {currentTranscriptionRef.current && (
+                   <p className="text-xs text-blue-800 mt-2 italic">
+                     Current: "{currentTranscriptionRef.current}"
+                   </p>
+                 )}
+               </div>
+             )}
           </div>
 
           {/* Video Recording - Right Side */}
@@ -568,9 +753,9 @@ export default function InterviewPage() {
 
             {/* Recording Controls */}
             <div className="space-y-2">
-              <div className="text-sm text-gray-600">
-                Duration: {Math.floor((Date.now() - recordingStartTime) / 1000)}s
-              </div>
+                             <div className="text-sm text-gray-900">
+                 Duration: {Math.floor((Date.now() - recordingStartTime) / 1000)}s
+               </div>
               {interviewStatus === 'active' && (
                 <button
                   onClick={isRecording ? stopRecording : startContinuousRecording}
@@ -596,14 +781,14 @@ export default function InterviewPage() {
                   <div key={question.id} className={`p-2 rounded text-sm ${
                     index < currentQuestionIndex ? 'bg-green-100 text-green-800' :
                     index === currentQuestionIndex ? 'bg-blue-100 text-blue-800' :
-                    'bg-gray-100 text-gray-600'
+                                         'bg-gray-100 text-gray-900'
                   }`}>
                     <div className="font-medium capitalize">{question.category}</div>
-                    <div className="text-xs opacity-75">
-                      {index < currentQuestionIndex ? '✅ Complete' :
-                       index === currentQuestionIndex ? '🔄 Current' :
-                       '⏳ Pending'}
-                    </div>
+                                         <div className="text-xs text-gray-800">
+                       {index < currentQuestionIndex ? '✅ Complete' :
+                        index === currentQuestionIndex ? '🔄 Current' :
+                        '⏳ Pending'}
+                     </div>
                   </div>
                 ))}
               </div>
