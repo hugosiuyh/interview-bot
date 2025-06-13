@@ -260,7 +260,7 @@ export default function InterviewPage() {
           body: JSON.stringify({ presetQuestion: nextQuestion.question, previousUserMessage }),
         });
         const data = await rephraseRes.json();
-        if (data.reworded) reworded = data.reworded;
+        if (data.reworded && data.reworded.trim()) reworded = data.reworded.trim();
       } catch (e) {
         // fallback to original question
       }
