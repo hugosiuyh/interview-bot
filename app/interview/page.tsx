@@ -50,7 +50,7 @@ export default function InterviewPage() {
   const router = useRouter();
 
   const [followUpCount, setFollowUpCount] = useState(0);
-  const MAX_FOLLOWUPS = 2;
+  const MAX_FOLLOWUPS = 1;
 
   const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [recordingTimeLeft, setRecordingTimeLeft] = useState(120); // 2 minutes in seconds

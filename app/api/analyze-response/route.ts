@@ -62,17 +62,18 @@ Question: ${questionText}
 Candidate's Answer: ${response}
 
 Analyze the response using the checklist above. A follow-up is ONLY needed if:
-- No specific example is provided
-- No measurable results are mentioned
-- No concrete actions are described
-- The response is purely theoretical or general
+- The response is very short (less than 50 words) AND lacks specific examples
+- The response is purely theoretical or general with no personal experience
+- The response completely lacks measurable results or concrete actions
 
-If the response includes:
+If the response includes ANY of these:
 - A specific situation
 - Concrete actions taken
 - Measurable results
 - Personal reflection
 Then NO follow-up is needed.
+
+Since we only have one follow-up opportunity, be more selective and only ask for follow-up if the response is significantly lacking in multiple key areas.
 
 Respond with this exact JSON structure:
 {
@@ -264,8 +265,24 @@ function analyzeResponseDepth(response: string, questionId: string, questionText
   const hasExample = detectExample(response);
   const isDetailed = responseLength >= 100; // Minimum 100 characters for detailed response
   
-  // Determine if follow-up is needed based on question type and response quality
-  const needsFollowUp = shouldAskFollowUp(response, questionId, hasExample, isDetailed);
+  // Determine if we need a follow-up question
+  const needsFollowUp = !hasExample && (
+    responseLength < 50 || // Very short response
+    (responseLength < 100 && !hasExample) || // Short response without examples
+    (responseLength < 150 && !hasExample) // Medium response without personal experience
+  );
+
+  // Generate follow-up question if needed
+  let followUpQuestion = '';
+  if (needsFollowUp) {
+    if (responseLength < 50) {
+      followUpQuestion = "Could you elaborate more on that? I'd love to hear more details about your experience.";
+    } else if (!hasExample) {
+      followUpQuestion = "Could you share a specific example or situation where you demonstrated this?";
+    } else if (!hasExample) {
+      followUpQuestion = "How has this played out in your personal experience? Could you share a specific instance?";
+    }
+  }
   
   return {
     needsFollowUp,
@@ -285,27 +302,6 @@ function detectExample(response: string): boolean {
   
   const responseWords = response.toLowerCase();
   return exampleIndicators.some(indicator => responseWords.includes(indicator));
-}
-
-function shouldAskFollowUp(response: string, questionId: string, hasExample: boolean, isDetailed: boolean): boolean {
-  // Don't ask follow-up if response already has a good example and is detailed
-  if (hasExample && isDetailed) {
-    return false;
-  }
-  
-  // Question-specific logic
-  const followUpTriggers = {
-    'q1': !hasExample, // Motivation questions need specific examples
-    'q2': !hasExample, // Time management needs concrete strategies
-    'q3': !hasExample, // Stress management needs specific scenarios
-    'q4': response.length < 50, // Diversity questions need detailed preferences
-    'q5': response.length < 80, // Policy questions need detailed comfort level
-    'q6': response.length < 80, // Boundary questions need clear stance
-    'q7': !hasExample, // Help-seeking questions must have examples
-    'q8': !hasExample // Flexibility questions need specific examples
-  };
-  
-  return followUpTriggers[questionId as keyof typeof followUpTriggers] || false;
 }
 
 function calculateConfidence(response: string, hasExample: boolean, isDetailed: boolean): number {

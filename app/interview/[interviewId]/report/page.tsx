@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 
 // Simple Tab Component
@@ -148,6 +148,13 @@ function VideoPlayer({ videoUrl, startTime }: { videoUrl: string, startTime: num
   // Remove any /api/videos/ prefix if it exists
   const cleanVideoUrl = videoUrl.replace(/^\/api\/videos\//, '');
   const [error, setError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = startTime;
+    }
+  }, [startTime]);
   
   return (
     <div className="bg-white p-6 rounded-lg shadow-sm border mb-6">
@@ -158,13 +165,10 @@ function VideoPlayer({ videoUrl, startTime }: { videoUrl: string, startTime: num
         </div>
       ) : (
         <video 
+          ref={videoRef}
           className="w-full rounded-lg"
           controls
           src={`/api/video/${encodeURIComponent(cleanVideoUrl)}`}
-          onLoadedMetadata={(e) => {
-            const video = e.target as HTMLVideoElement;
-            video.currentTime = startTime;
-          }}
           onError={(e) => {
             const video = e.target as HTMLVideoElement;
             setError(video.error?.message || 'Failed to load video');

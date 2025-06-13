@@ -12,7 +12,7 @@ export const INTERVIEW_QUESTIONS: InterviewQuestion[] = [
     id: "q1",
     order: 1,
     category: "motivation",
-    question: "Why did you choose to apply to Momentum, and what drew you to a career in counseling?",
+    question: "What inspired you to pursue a career in counseling, and what specifically attracted you to Momentum?",
     traits: ["Achievement", "Passion/Motivation", "Cultural Competence"],
     momentumMetrics: ["Alignment with organization", "intention"]
   },
@@ -20,7 +20,7 @@ export const INTERVIEW_QUESTIONS: InterviewQuestion[] = [
     id: "q2", 
     order: 2,
     category: "logistics",
-    question: "With 6–12 client sessions per week expected, how would you manage that with your other responsibilities?",
+    question: "As a counselor at Momentum, you'll have 6-12 client sessions per week. How do you plan to balance this workload with your other commitments?",
     traits: ["Achievement", "Responsibility", "Time Management", "Adaptability"],
     momentumMetrics: ["Has realistic plan", "time commitment"]
   },
@@ -28,7 +28,7 @@ export const INTERVIEW_QUESTIONS: InterviewQuestion[] = [
     id: "q3",
     order: 3,
     category: "stress_management",
-    question: "The beginning can feel overwhelming—new tools, policies, and intake flow. How do you plan to manage that?",
+    question: "Starting a new role can be challenging with new systems and procedures to learn. How do you typically handle new learning curves, and what strategies would you use to manage the initial transition period?",
     traits: ["Stress Tolerance", "Planning", "Adaptability", "Learning Agility"],
     momentumMetrics: ["Managing busy start"]
   },
@@ -36,7 +36,7 @@ export const INTERVIEW_QUESTIONS: InterviewQuestion[] = [
     id: "q4",
     order: 4,
     category: "diversity",
-    question: "We serve clients from diverse age groups and backgrounds. Which populations interest you most, and are there any you'd feel less comfortable working with?",
+    question: "Our clients come from various backgrounds and age groups. Could you share which client populations you're most interested in working with, and are there any groups you might need additional support or training to work with effectively?",
     traits: ["Extroversion", "Cooperativeness", "Cultural Competence", "Professional Boundaries"],
     momentumMetrics: ["Open to diversity", "population fit"]
   },
@@ -44,7 +44,7 @@ export const INTERVIEW_QUESTIONS: InterviewQuestion[] = [
     id: "q5",
     order: 5,
     category: "compliance",
-    question: "How do you feel about our policies around documentation deadlines and diagnosing clients for insurance purposes?",
+    question: "Documentation and insurance-related diagnoses are important parts of our work. How do you feel about meeting documentation deadlines and providing diagnoses for insurance purposes?",
     traits: ["Competitiveness", "Compliance", "Conscientiousness", "Time Management"],
     momentumMetrics: ["Comfort with policy", "structure", "diagnosing"]
   },
@@ -52,7 +52,7 @@ export const INTERVIEW_QUESTIONS: InterviewQuestion[] = [
     id: "q6",
     order: 6,
     category: "boundaries",
-    question: "Our clinicians don't provide opinion letters and we reserve final decisions for leadership. How do you feel about those expectations?",
+    question: "At Momentum, we have specific policies about opinion letters and decision-making authority. How do you feel about following these guidelines where leadership makes final decisions and clinicians don't provide opinion letters?",
     traits: ["Assertiveness", "Compliance", "Judgment", "Professional Boundaries"],
     momentumMetrics: ["Accepting of policy decisions", "professional boundaries"]
   },
@@ -60,7 +60,7 @@ export const INTERVIEW_QUESTIONS: InterviewQuestion[] = [
     id: "q7",
     order: 7,
     category: "growth",
-    question: "Tell us about a time you had to ask for help or support at work. What led you to that point, and how did you approach it?",
+    question: "Could you share a specific example of when you needed to ask for help or support in a professional setting? What was the situation, and how did you handle it?",
     traits: ["Assertiveness", "Learning Agility", "Judgment", "Adaptability"],
     momentumMetrics: ["Knowing when to escalate", "growth mindset"]
   },
@@ -68,7 +68,7 @@ export const INTERVIEW_QUESTIONS: InterviewQuestion[] = [
     id: "q8",
     order: 8,
     category: "flexibility",
-    question: "At Momentum, you'll encounter things like seeing clients on evenings/weekends, adhering to documentation deadlines, following evolving systems, and sometimes working outside your comfort zone. Can you talk about your flexibility and willingness to say yes to those expectations — and what might limit that?",
+    question: "Our role requires flexibility in several areas: working evenings/weekends, meeting documentation deadlines, adapting to new systems, and sometimes stepping outside your comfort zone. Could you share your thoughts on these requirements and any limitations you might have?",
     traits: ["Flexibility", "Compliance", "Stress Tolerance", "Responsibility", "Time Management", "Adaptability"],
     momentumMetrics: ["Willingness to work evenings/weekends", "Openness to practice policies", "Realistic expectations of agency work"]
   }
