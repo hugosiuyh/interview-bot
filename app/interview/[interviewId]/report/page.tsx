@@ -64,13 +64,21 @@ function TraitBarChart({ traits }: { traits: any[] }) {
                     }}
                   />
                 )}
-                {/* Score bar */}
+                {/* Score marker */}
                 <div
-                  className={`h-full transition-all duration-500 ${
-                    isInRange ? 'bg-green-500' : 'bg-blue-500'
-                  }`}
-                  style={{ width: `${(score / 10) * 100}%` }}
-                />
+                  className="absolute top-1/2 -translate-y-1/2"
+                  style={{
+                    left: `calc(${(score / 10) * 100}% - 10px)` // Adjust -10px for marker width/2
+                  }}
+                >
+                  <button
+                    className={`w-5 h-5 rounded-full border-2 ${
+                      isInRange ? 'bg-green-500 border-green-700' : 'bg-blue-500 border-blue-700'
+                    } shadow`}
+                    title={`Score: ${score.toFixed(1)}`}
+                    tabIndex={-1}
+                  />
+                </div>
               </div>
               {boundary && (
                 <div className="text-xs text-gray-500 mt-1">
