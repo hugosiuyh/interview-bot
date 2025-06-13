@@ -20,11 +20,29 @@ export async function GET(
       const analysis = JSON.parse(content);
       return NextResponse.json(analysis);
     } catch (error) {
-      console.error('Error reading analysis file:', error);
-      return new NextResponse('Analysis not found', { status: 404 });
+      console.log('Analysis file not found, generating scores...');
+      
+      // Generate scores by calling the score API
+      const scoreResponse = await fetch(`${request.nextUrl.origin}/api/score`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ interviewId }),
+      });
+
+      if (!scoreResponse.ok) {
+        throw new Error('Failed to generate scores');
+      }
+
+      const analysis = await scoreResponse.json();
+      return NextResponse.json(analysis);
     }
   } catch (error) {
     console.error('Error fetching analysis:', error);
-    return new NextResponse('Internal Server Error', { status: 500 });
+    return NextResponse.json({ 
+      error: 'Internal Server Error',
+      message: 'An unexpected error occurred while fetching the analysis.'
+    }, { status: 500 });
   }
 } 
