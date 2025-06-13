@@ -11,97 +11,96 @@ Endpoints:
     POST /transcribe - Upload audio file for transcription
 """
 
+import os
+import tempfile
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import tempfile
-import os
-import logging
-from faster_whisper import WhisperModel
+import subprocess
+from openai import OpenAI
 
 app = Flask(__name__)
 CORS(app)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-# Initialize Whisper model
-model = WhisperModel("base", device="cpu", compute_type="int8")
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({"status": "healthy", "service": "whisper-transcription"})
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy", "service": "openai-transcription"})
 
 @app.route('/transcribe', methods=['POST'])
-def transcribe_audio():
-    """
-    Transcribe uploaded audio file
-    
-    Expected: multipart/form-data with 'audio' file
-    Returns: JSON array of transcript segments with timestamps
-    """
+def transcribe():
     try:
-        # Check if audio file is present
-        if 'audio' not in request.files:
-            return jsonify({"error": "No audio file provided"}), 400
-        
-        audio_file = request.files['audio']
-        if audio_file.filename == '':
-            return jsonify({"error": "No file selected"}), 400
+        if 'audio' not in request.files and 'video' not in request.files:
+            return jsonify({"error": "No audio or video file provided"}), 400
 
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
-            audio_file.save(temp_file.name)
-            temp_file_path = temp_file.name
+        file = request.files.get('audio') or request.files.get('video')
+        file_ext = os.path.splitext(file.filename)[1].lower()
 
-        try:
-            # Real Whisper transcription
-            segments, info = model.transcribe(
-                temp_file_path,
-                beam_size=5,
-                vad_filter=True,
-                vad_parameters=dict(
-                    min_silence_duration_ms=500,  # Minimum silence duration to split segments
-                    speech_pad_ms=400,  # Add padding to speech segments
-                )
-            )
+        # Create temp directory for processing
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, f"input{file_ext}")
+            audio_path = os.path.join(temp_dir, "audio.mp3")
             
-            result = []
-            for segment in segments:
-                # Format timestamps as seconds from start
-                result.append({
+            # Save uploaded file
+            file.save(input_path)
+
+            # If it's a video file, extract audio
+            if file_ext in ['.webm', '.mp4', '.mov']:
+                print(f"Extracting audio from video file: {input_path}")
+                # Extract audio using ffmpeg and convert to mp3
+                cmd = [
+                    'ffmpeg', '-i', input_path,
+                    '-vn',  # Disable video
+                    '-acodec', 'libmp3lame',  # Convert to MP3
+                    '-ar', '16000',  # Set sample rate to 16kHz
+                    '-ac', '1',  # Convert to mono
+                    '-y',  # Overwrite output file
+                    audio_path
+                ]
+                subprocess.run(cmd, check=True)
+            else:
+                # For audio files, just convert to mp3
+                cmd = [
+                    'ffmpeg', '-i', input_path,
+                    '-acodec', 'libmp3lame',
+                    '-ar', '16000',
+                    '-ac', '1',
+                    '-y',
+                    audio_path
+                ]
+                subprocess.run(cmd, check=True)
+
+            print("Transcribing audio...")
+            
+            # Open the audio file
+            with open(audio_path, 'rb') as audio_file:
+                # Use OpenAI's transcription API
+                transcription = client.audio.transcriptions.create(
+                    model="gpt-4o-transcribe",
+                    file=audio_file,
+                    response_format="verbose_json",
+                    prompt="This is an interview conversation between an AI interviewer and a job candidate.",
+                )
+
+            # Format response with timestamps
+            segments = []
+            for segment in transcription.segments:
+                segments.append({
+                    "text": segment.text,
                     "start": segment.start,
                     "end": segment.end,
-                    "text": segment.text.strip()
+                    "words": segment.words if hasattr(segment, 'words') else []
                 })
-            
-            logger.info(f"Transcribed audio file: {audio_file.filename}")
-            return jsonify(result)
 
-        finally:
-            # Clean up temporary file
-            if os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
+            return jsonify(segments)
 
+    except subprocess.CalledProcessError as e:
+        print(f"FFmpeg error: {e}")
+        return jsonify({"error": f"Failed to process audio: {str(e)}"}), 500
     except Exception as e:
-        logger.error(f"Transcription error: {str(e)}")
-        return jsonify({"error": "Transcription failed", "details": str(e)}), 500
-
-@app.route('/models', methods=['GET'])
-def list_models():
-    """List available Whisper models"""
-    return jsonify({
-        "available_models": ["tiny", "base", "small", "medium", "large"],
-        "current_model": "base",
-        "note": "Change model in code based on accuracy vs speed requirements"
-    })
+        print(f"Transcription error: {e}")
+        return jsonify({"error": f"Failed to transcribe: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    logger.info("Starting Whisper Transcription Service...")
-    logger.info("Available endpoints:")
-    logger.info("  GET  /health - Health check")
-    logger.info("  POST /transcribe - Audio transcription")
-    logger.info("  GET  /models - List available models")
-    
-    app.run(host='0.0.0.0', port=5001, debug=True) 
+    app.run(host='0.0.0.0', port=5001) 

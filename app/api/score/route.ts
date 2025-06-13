@@ -1,328 +1,187 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
-import { SCORING_EXAMPLES, TRAIT_BOUNDARIES } from '@/utils/questions';
-import { SCORING_SYSTEM_PROMPT } from '@/utils/prompts';
+import { SCORING_EXAMPLES, TRAIT_BOUNDARIES, INTERVIEW_QUESTIONS } from '@/utils/questions';
+import fs from 'fs/promises';
+import path from 'path';
+import { ensureTmpAnalysisDirectory } from '@/utils/tmp';
 
-const prisma = new PrismaClient();
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+interface TranscriptSegment {
+  text: string;
+  start: number;
+  end: number;
+}
+
+interface TranscriptFile {
+  interviewId: string;
+  questionId: string;
+  followUpIndex: number;
+  videoFile: string;
+  segments: TranscriptSegment[];
+}
 
 export async function POST(request: NextRequest) {
   console.log('[Score API] Received scoring request');
   
   try {
-    const { transcript, interviewId, candidateName, candidateEmail } = await request.json();
+    const { interviewId } = await request.json();
     
-    if (!transcript || !interviewId) {
-      console.warn('[Score API] Missing required fields:', { 
-        transcript: !!transcript, 
-        interviewId: !!interviewId 
-      });
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    if (!interviewId) {
+      console.warn('[Score API] Missing interviewId');
+      return NextResponse.json({ error: 'Missing interviewId' }, { status: 400 });
     }
 
-    console.log('[Score API] Processing interview:', {
-      interviewId,
-      candidateName: candidateName || 'Anonymous',
-      transcriptLength: transcript.length
-    });
+    if (!OPENAI_API_KEY) {
+      return NextResponse.json({ error: 'No OpenAI API key set' }, { status: 500 });
+    }
 
-    // Calculate scores
-    const scores = calculateScores(transcript);
-    console.log('[Score API] Calculated scores:', scores);
+    // Ensure tmp directory exists
+    const tmpDir = await ensureTmpAnalysisDirectory();
+    const files = await fs.readdir(tmpDir);
+    const transcriptFiles = files.filter(f => 
+      f.startsWith(interviewId) && 
+      f.endsWith('.json') && 
+      !f.includes('analysis')
+    );
 
-    // Update interview record
-    console.log('[Score API] Updating interview record');
-    const updatedInterview = await prisma.interview.update({
-      where: { id: interviewId },
-      data: {
-        candidateName,
-        candidateEmail,
-        endTime: new Date(),
-        status: 'completed',
-        ...scores,
-        scores: {
-          create: Object.entries(scores).map(([trait, score]) => ({
-            trait,
-            score: score as number,
-            rationale: generateRationale(trait, score as number),
-            quotes: JSON.stringify([])
-          }))
+    // Load all transcript data
+    const allTranscripts: TranscriptFile[] = await Promise.all(transcriptFiles.map(async file => {
+      const content = await fs.readFile(path.join(tmpDir, file), 'utf-8');
+      return JSON.parse(content) as TranscriptFile;
+    }));
+
+    // Get all unique traits from questions
+    const allTraits = new Set<string>();
+    INTERVIEW_QUESTIONS.forEach(q => q.traits.forEach(t => allTraits.add(t)));
+
+    // Process each trait
+    const traitAnalyses = await Promise.all(Array.from(allTraits).map(async trait => {
+      // Gather all relevant segments for this trait
+      const relevantSegments: { text: string; start: number; videoFile: string; questionId: string }[] = [];
+      for (const transcript of allTranscripts) {
+        const question = INTERVIEW_QUESTIONS.find(q => q.id === transcript.questionId);
+        if (question?.traits.includes(trait)) {
+          for (const seg of transcript.segments) {
+            relevantSegments.push({
+              text: seg.text,
+              start: seg.start,
+              videoFile: transcript.videoFile,
+              questionId: transcript.questionId
+            });
+          }
         }
       }
+      if (relevantSegments.length === 0) {
+        return {
+          trait,
+          score: null,
+          rationale: 'No relevant responses found.',
+          quotes: [],
+          boundary: TRAIT_BOUNDARIES[trait as keyof typeof TRAIT_BOUNDARIES]
+        };
+      }
+
+      // Compose prompt for GPT
+      const traitDesc = trait + (TRAIT_BOUNDARIES[trait as keyof typeof TRAIT_BOUNDARIES] ? ` (ideal range: ${TRAIT_BOUNDARIES[trait as keyof typeof TRAIT_BOUNDARIES].min}-${TRAIT_BOUNDARIES[trait as keyof typeof TRAIT_BOUNDARIES].max})` : '');
+      const questions = INTERVIEW_QUESTIONS.filter(q => q.traits.includes(trait)).map(q => `- ${q.question}`).join('\n');
+      const scoringExamples = SCORING_EXAMPLES[trait as keyof typeof SCORING_EXAMPLES];
+      const examplesText = scoringExamples ? Object.entries(scoringExamples).map(([score, desc]) => `${score}: ${desc}`).join('\n') : '';
+      const quotesText = relevantSegments.map((q, i) => `Quote ${i+1}: "${q.text.trim()}" (start: ${q.start}s, videoFile: ${q.videoFile}, questionId: ${q.questionId})`).join('\n');
+
+      const prompt = `You are an expert interviewer.\n\nTrait: ${traitDesc}\nRelevant Interview Questions:\n${questions}\n\nScoring Examples:\n${examplesText}\n\nBelow are quotes from the candidate's interview responses (with start time and video file).\n\nPlease do the following:\n1. Select up to 3 quotes that are most relevant to this trait.\n2. Assign a score for this trait (1-10, decimals allowed).\n3. Write a rationale for your score, referencing the selected quotes.\n\nRespond in this JSON format:\n{\n  "score": number,\n  "rationale": string,\n  "quotes": [\n    { "text": string, "start": number, "videoFile": string }\n  ]\n}\n\nQuotes:\n${quotesText}\n\nJSON:`;
+
+      // Call OpenAI
+      const gptRes = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          messages: [
+            { role: 'system', content: 'You are an expert interviewer.' },
+            { role: 'user', content: prompt }
+          ],
+          temperature: 0.3,
+          max_tokens: 500
+        })
+      });
+      const gptData = await gptRes.json();
+      let gptText = '';
+      try {
+        gptText = gptData.choices[0].message.content.trim();
+        // Extract JSON from GPT response
+        const match = gptText.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          return {
+            trait,
+            score: parsed.score,
+            rationale: parsed.rationale,
+            quotes: parsed.quotes,
+            boundary: TRAIT_BOUNDARIES[trait as keyof typeof TRAIT_BOUNDARIES]
+          };
+        }
+      } catch (e) {
+        // fallback below
+      }
+      return {
+        trait,
+        score: null,
+        rationale: 'Could not parse GPT response.',
+        quotes: [],
+        boundary: TRAIT_BOUNDARIES[trait as keyof typeof TRAIT_BOUNDARIES]
+      };
+    }));
+
+    // Compose overall summary prompt for GPT
+    const summaryPrompt = `You are an expert interviewer.\n\nHere are the trait scores and rationales for a candidate:\n${traitAnalyses.map(t => `${t.trait}: ${t.score}\nRationale: ${t.rationale}`).join('\n\n')}\n\nPlease provide:\n1. A final overall score (1-10)\n2. A recommendation (recommend, consider, not_recommended)\n3. A brief overall rationale\n\nRespond in this JSON format:\n{\n  "finalScore": number,\n  "recommendation": string,\n  "overallRationale": string\n}\n\nJSON:`;
+
+    const summaryRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: 'You are an expert interviewer.' },
+          { role: 'user', content: summaryPrompt }
+        ],
+        temperature: 0.3,
+        max_tokens: 300
+      })
+    });
+    const summaryData = await summaryRes.json();
+    let summaryText = '';
+    let overall = {};
+    try {
+      summaryText = summaryData.choices[0].message.content.trim();
+      const match = summaryText.match(/\{[\s\S]*\}/);
+      if (match) {
+        overall = JSON.parse(match[0]);
+      }
+    } catch (e) {
+      overall = { finalScore: null, recommendation: 'error', overallRationale: 'Could not parse GPT response.' };
+    }
+
+    // Save the analysis to a JSON file
+    const outputDir = await ensureTmpAnalysisDirectory();
+    await fs.writeFile(
+      path.join(outputDir, `${interviewId}_analysis.json`),
+      JSON.stringify({ traits: traitAnalyses, overall }, null, 2)
+    );
+
+    console.log('[Score API] Successfully saved analysis:', {
+      interviewId,
+      traitCount: traitAnalyses.length
     });
 
-    console.log('[Score API] Successfully updated interview:', {
-      id: updatedInterview.id,
-      status: updatedInterview.status,
-      scores: Object.entries(scores).map(([trait, score]) => `${trait}: ${score}`)
-    });
-
-    return NextResponse.json({
-      scores,
-      interview: updatedInterview
-    });
+    return NextResponse.json({ traits: traitAnalyses, overall });
   } catch (error) {
     console.error('[Score API] Error calculating scores:', error);
     return NextResponse.json({ error: 'Scoring failed' }, { status: 500 });
-  } finally {
-    await prisma.$disconnect();
   }
-}
-
-function calculateScores(transcript: string) {
-  console.log('[Score API] Starting score calculation');
-  
-  // Convert to lowercase for analysis
-  const text = transcript.toLowerCase();
-  
-  // Calculate trait scores
-  const complianceScore = calculateComplianceScore(text);
-  const stressToleranceScore = calculateStressToleranceScore(text);
-  const assertivenessScore = calculateAssertivenessScore(text);
-  const flexibilityScore = calculateFlexibilityScore(text);
-  const responsibilityScore = calculateResponsibilityScore(text);
-
-  console.log('[Score API] Individual trait scores:', {
-    compliance: complianceScore,
-    stressTolerance: stressToleranceScore,
-    assertiveness: assertivenessScore,
-    flexibility: flexibilityScore,
-    responsibility: responsibilityScore
-  });
-
-  // Calculate overall recommendation
-  const avgScore = (
-    complianceScore +
-    stressToleranceScore +
-    assertivenessScore +
-    flexibilityScore +
-    responsibilityScore
-  ) / 5;
-
-  const overallRecommendation = 
-    avgScore >= 0.8 ? 'recommend' :
-    avgScore >= 0.6 ? 'consider' :
-    'not_recommended';
-
-  console.log('[Score API] Overall recommendation:', {
-    averageScore: avgScore,
-    recommendation: overallRecommendation
-  });
-
-  return {
-    complianceScore,
-    stressToleranceScore,
-    assertivenessScore,
-    flexibilityScore,
-    responsibilityScore,
-    overallRecommendation
-  };
-}
-
-function calculateComplianceScore(text: string): number {
-  const positiveIndicators = [
-    'follow', 'guideline', 'rule', 'policy', 'procedure',
-    'standard', 'regulation', 'requirement', 'protocol',
-    'comply', 'compliance', 'adhere', 'accordance'
-  ];
-  
-  const negativeIndicators = [
-    'break', 'ignore', 'bypass', 'shortcut', 'skip',
-    'avoid', 'circumvent', 'disregard'
-  ];
-
-  return calculateTraitScore(text, positiveIndicators, negativeIndicators);
-}
-
-function calculateStressToleranceScore(text: string): number {
-  const positiveIndicators = [
-    'handle', 'manage', 'cope', 'adapt', 'remain calm',
-    'pressure', 'deadline', 'challenge', 'difficult',
-    'stress', 'balance', 'prioritize'
-  ];
-  
-  const negativeIndicators = [
-    'overwhelm', 'anxiety', 'panic', 'stress out',
-    'cannot handle', 'too much', 'breakdown'
-  ];
-
-  return calculateTraitScore(text, positiveIndicators, negativeIndicators);
-}
-
-function calculateAssertivenessScore(text: string): number {
-  const positiveIndicators = [
-    'lead', 'direct', 'guide', 'initiative', 'decision',
-    'confident', 'strong', 'firm', 'clear', 'decisive',
-    'advocate', 'speak up'
-  ];
-  
-  const negativeIndicators = [
-    'hesitate', 'unsure', 'maybe', 'perhaps', 'might',
-    'passive', 'defer', 'avoid conflict'
-  ];
-
-  return calculateTraitScore(text, positiveIndicators, negativeIndicators);
-}
-
-function calculateFlexibilityScore(text: string): number {
-  const positiveIndicators = [
-    'adapt', 'adjust', 'change', 'flexible', 'versatile',
-    'learn', 'grow', 'improve', 'different', 'various',
-    'multiple', 'alternative'
-  ];
-  
-  const negativeIndicators = [
-    'rigid', 'fixed', 'unchanging', 'inflexible', 'stuck',
-    'always', 'never', 'must', 'only way'
-  ];
-
-  return calculateTraitScore(text, positiveIndicators, negativeIndicators);
-}
-
-function calculateResponsibilityScore(text: string): number {
-  const positiveIndicators = [
-    'responsible', 'accountable', 'ownership', 'initiative',
-    'reliable', 'dependable', 'consistent', 'thorough',
-    'detail', 'organize', 'plan'
-  ];
-  
-  const negativeIndicators = [
-    'blame', 'excuse', 'forget', 'late', 'miss',
-    'procrastinate', 'careless', 'negligent'
-  ];
-
-  return calculateTraitScore(text, positiveIndicators, negativeIndicators);
-}
-
-function calculateTraitScore(
-  text: string,
-  positiveIndicators: string[],
-  negativeIndicators: string[]
-): number {
-  let score = 0.5; // Start at neutral
-
-  // Count positive indicators
-  const positiveCount = positiveIndicators.reduce((count, indicator) => {
-    const matches = text.split(indicator).length - 1;
-    return count + matches;
-  }, 0);
-
-  // Count negative indicators
-  const negativeCount = negativeIndicators.reduce((count, indicator) => {
-    const matches = text.split(indicator).length - 1;
-    return count + matches;
-  }, 0);
-
-  // Adjust score based on indicators
-  if (positiveCount > 0 || negativeCount > 0) {
-    const total = positiveCount + negativeCount;
-    score = 0.5 + (0.5 * (positiveCount - negativeCount) / total);
-  }
-
-  // Ensure score is between 0 and 1
-  return Math.min(Math.max(score, 0), 1);
-}
-
-function generateRationale(trait: string, score: number): string {
-  const strength = 
-    score >= 0.8 ? 'strong' :
-    score >= 0.6 ? 'moderate' :
-    'limited';
-
-  const traitDescriptions: Record<string, Record<string, string>> = {
-    complianceScore: {
-      strong: 'Demonstrates strong adherence to rules and procedures',
-      moderate: 'Shows general respect for guidelines with room for improvement',
-      limited: 'May need development in following established protocols'
-    },
-    stressToleranceScore: {
-      strong: 'Exhibits excellent ability to handle pressure and challenges',
-      moderate: 'Manages stress adequately but could enhance coping strategies',
-      limited: 'Could benefit from stress management techniques'
-    },
-    assertivenessScore: {
-      strong: 'Shows strong leadership qualities and clear communication',
-      moderate: 'Demonstrates balanced assertiveness in most situations',
-      limited: 'Could develop more confident communication style'
-    },
-    flexibilityScore: {
-      strong: 'Highly adaptable to change and new situations',
-      moderate: 'Shows reasonable flexibility with some preferences for routine',
-      limited: 'May need support in adapting to changes'
-    },
-    responsibilityScore: {
-      strong: 'Takes full ownership of tasks and outcomes',
-      moderate: 'Generally reliable with occasional oversight needed',
-      limited: 'Could improve in taking initiative and ownership'
-    }
-  };
-
-  return traitDescriptions[trait]?.[strength] || 
-    'Score indicates areas for potential development';
-}
-
-function generateSmartScore(trait: string, transcript: string): number {
-  const boundary = TRAIT_BOUNDARIES[trait as keyof typeof TRAIT_BOUNDARIES];
-  if (!boundary) return Math.floor(Math.random() * 4) + 6; // Default 6-9
-
-  // Basic keyword analysis for more realistic scoring
-  const keywords = getTraitKeywords(trait);
-  const positiveMatches = keywords.positive.filter(keyword => 
-    transcript.toLowerCase().includes(keyword.toLowerCase())
-  ).length;
-  
-  const negativeMatches = keywords.negative.filter(keyword => 
-    transcript.toLowerCase().includes(keyword.toLowerCase())
-  ).length;
-
-  // Calculate base score with some randomness
-  let baseScore = boundary.min + Math.random() * (boundary.max - boundary.min);
-  
-  // Adjust based on keyword matches
-  baseScore += positiveMatches * 0.5;
-  baseScore -= negativeMatches * 0.3;
-  
-  // Clamp to boundaries
-  baseScore = Math.max(boundary.min, Math.min(boundary.max, baseScore));
-  
-  return Math.round(baseScore * 10) / 10; // Round to 1 decimal
-}
-
-function getTraitKeywords(trait: string) {
-  const keywordMap: Record<string, { positive: string[], negative: string[] }> = {
-    Compliance: {
-      positive: ['follow', 'procedure', 'policy', 'guideline', 'structure', 'documentation', 'rule'],
-      negative: ['question', 'challenge', 'ignore', 'skip', 'flexible', 'bend']
-    },
-    'Stress Tolerance': {
-      positive: ['calm', 'manage', 'handle', 'cope', 'pressure', 'stressful', 'overcome'],
-      negative: ['overwhelmed', 'anxious', 'panic', 'struggle', 'difficult', 'stressed']
-    },
-    Assertiveness: {
-      positive: ['lead', 'confident', 'initiative', 'speak up', 'decision', 'take charge'],
-      negative: ['hesitate', 'passive', 'avoid', 'quiet', 'follow', 'uncertain']
-    },
-    Flexibility: {
-      positive: ['adapt', 'change', 'flexible', 'adjust', 'evolving', 'different'],
-      negative: ['rigid', 'fixed', 'resistant', 'same', 'routine', 'unchanging']
-    },
-    Responsibility: {
-      positive: ['accountable', 'responsible', 'ownership', 'commitment', 'reliable', 'dependable'],
-      negative: ['blame', 'excuse', 'avoid', 'unreliable', 'irresponsible']
-    }
-  };
-  
-  return keywordMap[trait] || { positive: [], negative: [] };
-}
-
-function extractQuotes(transcript: string, trait: string): string[] {
-  const sentences = transcript.split(/[.!?]+/).filter(s => s.trim().length > 10);
-  const keywords = getTraitKeywords(trait);
-  
-  const relevantSentences = sentences.filter(sentence => 
-    keywords.positive.some(keyword => 
-      sentence.toLowerCase().includes(keyword.toLowerCase())
-    )
-  );
-  
-  return relevantSentences.slice(0, 2).map(s => s.trim());
 } 

@@ -42,7 +42,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Compose prompt for GPT
-    const prompt = `You are an expert interview coach. Given the candidate's answer and the question, decide if a follow-up is needed to get a more in-depth or specific response. If so, generate a follow-up question that will help the candidate provide a concrete example or more detail. Respond in this JSON format:
+    const prompt = `You are an expert interview coach. 
+    Given the candidate's answer and the question, decide if a follow-up is needed to get a more in-depth or specific response. 
+    If so, generate a follow-up question that will help the candidate provide a concrete example or more detail. 
+    If the candidate's answer is already detailed and specific, do not generate a follow-up question.
+    Make it more conversational like and friendly, like a human interviewer. 
+    Respond in this JSON format:
 
 {
   "isFollowUp": true/false,
