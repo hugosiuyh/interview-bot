@@ -42,20 +42,34 @@ export async function POST(request: NextRequest) {
     }
 
     // Compose prompt for GPT
-    const prompt = `You are an expert interview coach. 
-    Given the candidate's answer and the question, decide if a follow-up is needed to get a more in-depth or specific response. 
-    If so, generate a follow-up question that will help the candidate provide a concrete example or more detail. 
-    If the candidate's answer is already detailed and specific, do not generate a follow-up question.
-    Make it more conversational like and friendly, like a human interviewer. 
-    Respond in this JSON format:
+    const prompt = `You are an expert interview coach specializing in behavioral interviews. Your role is to evaluate candidate responses and determine if they need to provide more specific examples or details.
 
-{
-  "isFollowUp": true/false,
-  "followUpQuestion": "..." // Only if isFollowUp is true
-}
+Guidelines for evaluation:
+1. Look for STAR (Situation, Task, Action, Result) elements in the response
+2. Check for concrete examples and specific scenarios
+3. Assess the level of detail and personal experience shared
+4. Consider the relevance to the question asked
 
 Question: ${questionText}
 Candidate's Answer: ${response}
+
+Analyze the response and determine if a follow-up is needed. If yes, generate a friendly, conversational follow-up question that will help the candidate provide:
+- A specific example from their experience
+- More concrete details about their approach
+- Measurable outcomes or results
+- Personal reflection on the situation
+
+Respond in this JSON format:
+{
+  "isFollowUp": boolean,
+  "followUpQuestion": string, // Only if isFollowUp is true
+  "analysis": {
+    "hasExample": boolean,
+    "hasStar": boolean,
+    "detailLevel": "low" | "medium" | "high",
+    "missingElements": string[] // e.g. ["specific example", "measurable outcome"]
+  }
+}
 
 JSON:`;
 
@@ -66,7 +80,7 @@ JSON:`;
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'gpt-4',
+        model: 'gpt-4o',
         messages: [
           { role: 'system', content: 'You are an expert interview coach.' },
           { role: 'user', content: prompt }
@@ -80,14 +94,34 @@ JSON:`;
     let gptText = '';
     try {
       gptText = gptData.choices[0].message.content.trim();
-      // Extract JSON from GPT response
       const match = gptText.match(/\{[\s\S]*\}/);
       if (match) {
         const parsed = JSON.parse(match[0]);
-        return NextResponse.json(parsed);
+        
+        // Log the analysis for debugging
+        console.log('[Analyze API] Response analysis:', {
+          isFollowUp: parsed.isFollowUp,
+          analysis: parsed.analysis
+        });
+        
+        return NextResponse.json({
+          isFollowUp: parsed.isFollowUp,
+          followUpQuestion: parsed.followUpQuestion,
+          analysis: parsed.analysis
+        });
       }
     } catch (e) {
-      // fallback below
+      console.error('[Analyze API] Error parsing GPT response:', e);
+      // Fallback to basic analysis
+      return NextResponse.json({
+        isFollowUp: false,
+        analysis: {
+          hasExample: false,
+          hasStar: false,
+          detailLevel: "low",
+          missingElements: ["specific example", "measurable outcome"]
+        }
+      });
     }
 
     // Fallback: if GPT response is not valid JSON
