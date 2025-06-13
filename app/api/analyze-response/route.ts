@@ -41,39 +41,66 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Compose prompt for GPT
-    const prompt = `You are an expert interview coach specializing in behavioral interviews. Your role is to evaluate candidate responses and determine if they need to provide more specific examples or details.
+    // First GPT call for scoring
+    const scoringPrompt = `You are an expert interview coach specializing in behavioral interviews. Your role is to evaluate candidate responses.
 
-Guidelines for evaluation:
-1. Look for STAR (Situation, Task, Action, Result) elements in the response
-2. Check for concrete examples and specific scenarios
-3. Assess the level of detail and personal experience shared
-4. Consider the relevance to the question asked
+RESPONSE EVALUATION CHECKLIST:
+
+1. STAR Elements (Score each 0-1):
+   - Situation: Clear context and background
+   - Task: Specific challenge or responsibility
+   - Action: Concrete steps taken
+   - Result: Measurable outcome or impact
+
+2. Content Quality (Score each 0-1):
+   - Specificity: Concrete details vs vague statements
+   - Relevance: Directly addresses the question
+   - Depth: Level of detail provided
+   - Personalization: Uses "I" statements and personal experience
 
 Question: ${questionText}
 Candidate's Answer: ${response}
 
-Analyze the response and determine if a follow-up is needed. If yes, generate a friendly, conversational follow-up question that will help the candidate provide:
-- A specific example from their experience
-- More concrete details about their approach
-- Measurable outcomes or results
-- Personal reflection on the situation
+Analyze the response using the checklist above. A follow-up is ONLY needed if:
+- No specific example is provided
+- No measurable results are mentioned
+- No concrete actions are described
+- The response is purely theoretical or general
 
-Respond in this JSON format:
+If the response includes:
+- A specific situation
+- Concrete actions taken
+- Measurable results
+- Personal reflection
+Then NO follow-up is needed.
+
+Respond with this exact JSON structure:
 {
   "isFollowUp": boolean,
-  "followUpQuestion": string, // Only if isFollowUp is true
   "analysis": {
-    "hasExample": boolean,
-    "hasStar": boolean,
-    "detailLevel": "low" | "medium" | "high",
-    "missingElements": string[] // e.g. ["specific example", "measurable outcome"]
+    "starElements": {
+      "situation": number,
+      "task": number,
+      "action": number,
+      "result": number,
+      "overallStarScore": number
+    },
+    "contentQuality": {
+      "specificity": number,
+      "relevance": number,
+      "depth": number,
+      "personalization": number,
+      "overallContentScore": number
+    },
+    "hasSpecificExample": boolean,
+    "hasMeasurableResults": boolean,
+    "hasConcreteActions": boolean,
+    "hasPersonalReflection": boolean,
+    "keyPoints": string[]
   }
-}
+}`;
 
-JSON:`;
-
-    const gptRes = await fetch('https://api.openai.com/v1/chat/completions', {
+    const scoringRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${OPENAI_API_KEY}`,
@@ -82,44 +109,140 @@ JSON:`;
       body: JSON.stringify({
         model: 'gpt-4o',
         messages: [
-          { role: 'system', content: 'You are an expert interview coach.' },
-          { role: 'user', content: prompt }
+          { role: 'system', content: 'You are an expert interview coach. Always respond with valid JSON.' },
+          { role: 'user', content: scoringPrompt }
         ],
         temperature: 0.3,
-        max_tokens: 200
+        max_tokens: 500
       })
     });
 
-    const gptData = await gptRes.json();
-    let gptText = '';
+    const scoringData = await scoringRes.json();
+    
+    // Check for API errors
+    if (!scoringData.choices || !scoringData.choices[0] || !scoringData.choices[0].message) {
+      console.error('[Analyze API] GPT API error:', scoringData);
+      // Use analyzeResponseDepth as fallback
+      const analysis = analyzeResponseDepth(response, questionId, questionText);
+      return NextResponse.json({
+        isFollowUp: analysis.needsFollowUp,
+        followUpQuestion: analysis.needsFollowUp ? "Could you provide a specific example to illustrate your point?" : undefined,
+        analysis: {
+          hasExample: analysis.hasExample,
+          hasStar: analysis.confidence > 0.7,
+          detailLevel: analysis.responseLength > 200 ? "high" : analysis.responseLength > 100 ? "medium" : "low",
+          missingElements: []
+        }
+      });
+    }
+
+    let scoringText = '';
     try {
-      gptText = gptData.choices[0].message.content.trim();
-      const match = gptText.match(/\{[\s\S]*\}/);
+      scoringText = scoringData.choices[0].message.content.trim();
+      scoringText = scoringText.replace(/```json\n?|\n?```/g, '').trim();
+      const match = scoringText.match(/\{[\s\S]*\}/);
       if (match) {
-        const parsed = JSON.parse(match[0]);
-        
-        // Log the analysis for debugging
-        console.log('[Analyze API] Response analysis:', {
-          isFollowUp: parsed.isFollowUp,
-          analysis: parsed.analysis
-        });
-        
-        return NextResponse.json({
-          isFollowUp: parsed.isFollowUp,
-          followUpQuestion: parsed.followUpQuestion,
-          analysis: parsed.analysis
-        });
+        try {
+          const parsed = JSON.parse(match[0]);
+          
+          // Log the analysis for debugging
+          console.log('[Analyze API] Response analysis:', {
+            isFollowUp: parsed.isFollowUp,
+            analysis: parsed.analysis
+          });
+          
+          // If follow-up is needed, make a second GPT call for the question
+          if (parsed.isFollowUp) {
+            const questionPrompt = `You are an expert interview coach. Generate a follow-up question that:
+1. Acknowledges what was said in the response
+2. Shows active listening
+3. Asks for a specific example or more details
+4. Maintains a conversational and empathetic tone
+
+Question: ${questionText}
+Candidate's Answer: ${response}
+Analysis: ${JSON.stringify(parsed.analysis)}
+
+Respond with this exact JSON structure:
+{
+  "followUpQuestion": string
+}`;
+
+            const questionRes = await fetch('https://api.openai.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                model: 'gpt-4o',
+                messages: [
+                  { role: 'system', content: 'You are an expert interview coach. Always respond with valid JSON.' },
+                  { role: 'user', content: questionPrompt }
+                ],
+                temperature: 0.7,
+                max_tokens: 200
+              })
+            });
+
+            const questionData = await questionRes.json();
+            
+            // Check for API errors
+            if (!questionData.choices || !questionData.choices[0] || !questionData.choices[0].message) {
+              console.error('[Analyze API] GPT API error for follow-up question:', questionData);
+              parsed.followUpQuestion = "Could you provide a specific example to illustrate your point?";
+            } else {
+              let followUpQuestionText = '';
+              try {
+                followUpQuestionText = questionData.choices[0].message.content.trim();
+                followUpQuestionText = followUpQuestionText.replace(/```json\n?|\n?```/g, '').trim();
+                const questionMatch = followUpQuestionText.match(/\{[\s\S]*\}/);
+                if (questionMatch) {
+                  const questionParsed = JSON.parse(questionMatch[0]);
+                  parsed.followUpQuestion = questionParsed.followUpQuestion;
+                }
+              } catch (questionError) {
+                console.error('[Analyze API] Error processing follow-up question:', questionError);
+                parsed.followUpQuestion = "Could you provide a specific example to illustrate your point?";
+              }
+            }
+          }
+          
+          return NextResponse.json({
+            isFollowUp: parsed.isFollowUp,
+            followUpQuestion: parsed.isFollowUp ? parsed.followUpQuestion : undefined,
+            analysis: parsed.analysis
+          });
+        } catch (parseError) {
+          console.error('[Analyze API] JSON parse error:', parseError);
+          console.error('[Analyze API] Raw GPT response:', scoringText);
+          
+          // Use analyzeResponseDepth instead of hardcoded fallback
+          const analysis = analyzeResponseDepth(response, questionId, questionText);
+          return NextResponse.json({
+            isFollowUp: analysis.needsFollowUp,
+            followUpQuestion: analysis.needsFollowUp ? "Could you provide a specific example to illustrate your point?" : undefined,
+            analysis: {
+              hasExample: analysis.hasExample,
+              hasStar: analysis.confidence > 0.7,
+              detailLevel: analysis.responseLength > 200 ? "high" : analysis.responseLength > 100 ? "medium" : "low",
+              missingElements: []
+            }
+          });
+        }
       }
     } catch (e) {
-      console.error('[Analyze API] Error parsing GPT response:', e);
-      // Fallback to basic analysis
+      console.error('[Analyze API] Error processing GPT response:', e);
+      // Use analyzeResponseDepth instead of hardcoded fallback
+      const analysis = analyzeResponseDepth(response, questionId, questionText);
       return NextResponse.json({
-        isFollowUp: false,
+        isFollowUp: analysis.needsFollowUp,
+        followUpQuestion: analysis.needsFollowUp ? "Could you provide a specific example to illustrate your point?" : undefined,
         analysis: {
-          hasExample: false,
-          hasStar: false,
-          detailLevel: "low",
-          missingElements: ["specific example", "measurable outcome"]
+          hasExample: analysis.hasExample,
+          hasStar: analysis.confidence > 0.7,
+          detailLevel: analysis.responseLength > 200 ? "high" : analysis.responseLength > 100 ? "medium" : "low",
+          missingElements: []
         }
       });
     }
@@ -144,14 +267,8 @@ function analyzeResponseDepth(response: string, questionId: string, questionText
   // Determine if follow-up is needed based on question type and response quality
   const needsFollowUp = shouldAskFollowUp(response, questionId, hasExample, isDetailed);
   
-  let followUpQuestion = '';
-  if (needsFollowUp) {
-    followUpQuestion = generateFollowUpQuestion(questionId, response, hasExample);
-  }
-  
   return {
     needsFollowUp,
-    followUpQuestion,
     hasExample,
     responseLength,
     confidence: calculateConfidence(response, hasExample, isDetailed)
@@ -189,66 +306,6 @@ function shouldAskFollowUp(response: string, questionId: string, hasExample: boo
   };
   
   return followUpTriggers[questionId as keyof typeof followUpTriggers] || false;
-}
-
-function generateFollowUpQuestion(questionId: string, response: string, hasExample: boolean): string {
-  const followUpQuestions = {
-    'q1': [
-      "Can you give me a specific example of what drew you to counseling?",
-      "What particular experience or moment made you realize this was the right career path?",
-      "Can you share a specific situation where you felt passionate about helping others?"
-    ],
-    'q2': [
-      "Can you walk me through how you would organize a typical week with 8-10 sessions?",
-      "Give me an example of how you've managed multiple responsibilities before.",
-      "What specific strategies would you use to maintain work-life balance?"
-    ],
-    'q3': [
-      "Can you describe a specific time when you felt overwhelmed and how you handled it?",
-      "What would be your first step if you realized you were falling behind on documentation?",
-      "Give me an example of how you've learned complex procedures quickly in the past."
-    ],
-    'q4': [
-      "Can you be more specific about which age groups you feel most comfortable with?",
-      "Are there any specific populations you'd prefer to avoid, and why?",
-      "Give me an example of working with someone very different from yourself."
-    ],
-    'q5': [
-      "How do you typically feel about strict deadlines in general?",
-      "Can you give me an example of following detailed procedures in a previous role?",
-      "What's your experience with insurance requirements or similar regulatory work?"
-    ],
-    'q6': [
-      "Can you give me an example of a time when you disagreed with a supervisor's decision?",
-      "How do you typically handle situations where you can't make the final call?",
-      "Describe a time when you had to follow policies you didn't fully understand."
-    ],
-    'q7': [
-      "What was the specific situation that led you to ask for help?",
-      "How did you know it was the right time to reach out?",
-      "Can you describe exactly how you approached asking for support?"
-    ],
-    'q8': [
-      "Can you give me a specific example of working outside your comfort zone?",
-      "Describe a time when you had to adapt to changing requirements quickly.",
-      "What would you do if asked to work a weekend you hadn't planned for?"
-    ]
-  };
-  
-  const questions = followUpQuestions[questionId as keyof typeof followUpQuestions] || [
-    "Can you provide a specific example to illustrate your point?",
-    "Could you elaborate on that with a concrete situation you've experienced?",
-    "Can you give me more details about how you would handle this?"
-  ];
-  
-  // Choose follow-up based on what's missing
-  if (!hasExample && response.length < 50) {
-    return questions[0]; // Ask for specific example
-  } else if (!hasExample) {
-    return questions[1]; // Ask for concrete situation
-  } else {
-    return questions[2]; // Ask for more details
-  }
 }
 
 function calculateConfidence(response: string, hasExample: boolean, isDetailed: boolean): number {
