@@ -151,7 +151,7 @@ function VideoPlayer({ videoUrl, startTime }: { videoUrl: string, startTime: num
   
   return (
     <div className="bg-white p-6 rounded-lg shadow-sm border mb-6">
-      <h3 className="text-lg font-semibold mb-4">Interview Recording</h3>
+      <h3 className="text-lg font-semibold mb-4 text-black">Interview Recording</h3>
       {error ? (
         <div className="text-red-500 p-4 bg-red-50 rounded-lg">
           Error loading video: {error}

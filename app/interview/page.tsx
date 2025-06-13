@@ -53,6 +53,7 @@ export default function InterviewPage() {
   const MAX_FOLLOWUPS = 2;
 
   const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [recordingTimeLeft, setRecordingTimeLeft] = useState(120); // 2 minutes in seconds
 
   const formatTimestamp = (timestamp: string) => {
     return new Date(timestamp).toLocaleTimeString();
@@ -87,8 +88,8 @@ export default function InterviewPage() {
     // Restore Lily's friendly intro messages
     const introMsgs = [
       "Hi! I'm Lily, your AI interviewer. Nice to meet you! 😊",
-      "I'm going to ask you a few questions to get to know you better. This interview is untimed and you can take your time with each response.",
-      "When you've finished, I'll provide you with insights to help you in your job search. Are you ready to begin?",
+      "I'm going to have a conversation with you to get to know you better. This is a conversational style interview where I might ask follow-up questions to dive deeper into your responses.",
+      "Each response has a 2-minute time limit, but don't worry - you can take your time to think before answering. When you've finished, I'll provide you with insights to help you in your job search. Are you ready to begin?",
       INTERVIEW_QUESTIONS[0]?.question || ''
     ];
     
@@ -100,7 +101,7 @@ export default function InterviewPage() {
           setMessages(prev => [...prev, { from: 'bot', text: msgText, timestamp: new Date().toISOString() }]);
         }
         i++;
-        setTimeout(addNext, 1500);
+        setTimeout(addNext, 3000); // Increased delay to 3 seconds
       } else {
         // Start the first question
         setCurrentQuestionId(INTERVIEW_QUESTIONS[0]?.id || 'q1');
@@ -110,8 +111,22 @@ export default function InterviewPage() {
     addNext();
   }, [interviewId, interviewStatus]);
 
+  // Add timer effect
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (isRecording && recordingTimeLeft > 0) {
+      timer = setInterval(() => {
+        setRecordingTimeLeft(prev => prev - 1);
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isRecording, recordingTimeLeft]);
+
   const startAnswerRecording = async () => {
     try {
+      setRecordingTimeLeft(120); // Reset timer
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
       streamRef.current = stream;
       if (videoRef.current) videoRef.current.srcObject = stream;
@@ -250,6 +265,9 @@ export default function InterviewPage() {
         // fallback to original question
       }
 
+      // Add a delay before asking the next question
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
       const botMessage: Message = { 
         from: 'bot', 
         text: reworded, 
@@ -357,12 +375,17 @@ export default function InterviewPage() {
           </div>
 
           <div className="col-span-5 bg-white rounded-lg shadow-sm p-4">
-            <h3 className="font-medium text-blackmb-3">Video Feed</h3>
+            <h3 className="font-medium text-black mb-3">Video Feed</h3>
             <div className="relative aspect-video bg-gray-900 rounded-lg overflow-hidden">
               <video ref={videoRef} className="w-full h-full object-cover" muted playsInline autoPlay />
               {isRecording && (
-                <div className="absolute top-2 right-2 bg-red-500 text-white text-xs px-2 py-1 rounded-full animate-pulse">
-                  🔴 REC
+                <div className="absolute top-2 right-2 flex items-center gap-2">
+                  <div className="bg-red-500 text-white text-xs px-2 py-1 rounded-full animate-pulse">
+                    🔴 REC
+                  </div>
+                  <div className="bg-gray-800 text-white text-xs px-2 py-1 rounded-full">
+                    {Math.floor(recordingTimeLeft / 60)}:{(recordingTimeLeft % 60).toString().padStart(2, '0')}
+                  </div>
                 </div>
               )}
             </div>
