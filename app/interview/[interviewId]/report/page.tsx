@@ -259,7 +259,7 @@ function TraitBreakdown({ data }: { data: any }) {
                         <blockquote className="text-gray-700 italic mb-2">
                           "{quote.text}"
                         </blockquote>
-                        {quote.videoFile && quote.start && (
+                        {quote.videoFile && (quote.start === 0 || quote.start) && (
                           <div className="text-sm text-blue-600">
                             📹 {quote.videoFile} at {Math.floor(quote.start)}s
                             <button 

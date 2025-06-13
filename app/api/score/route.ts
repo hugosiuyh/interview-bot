@@ -36,8 +36,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Ensure tmp directory exists
-    const tmpDir = await ensureTmpAnalysisDirectory();
+    const tmpDir = path.join(process.cwd(), 'tmp');
+    console.log('[Score API] Using tmpDir:', tmpDir);
     const files = await fs.readdir(tmpDir);
+    console.log('[Score API] Files in tmpDir:', files);
     const transcriptFiles = files.filter(f => 
       f.startsWith(interviewId) && 
       f.endsWith('.json') && 
@@ -50,9 +52,16 @@ export async function POST(request: NextRequest) {
       return JSON.parse(content) as TranscriptFile;
     }));
 
+    console.log('[Score API] Loaded transcript files:', transcriptFiles);
+    console.log('[Score API] Loaded questionIds:', allTranscripts.map(t => t.questionId));
+
     // Get all unique traits from questions
     const allTraits = new Set<string>();
-    INTERVIEW_QUESTIONS.forEach(q => q.traits.forEach(t => allTraits.add(t)));
+    INTERVIEW_QUESTIONS.forEach(q => {
+      q.traits.forEach(t => allTraits.add(t));
+      console.log(`[Score API] Question ${q.id} has traits:`, q.traits);
+    });
+    console.log('[Score API] All traits to process:', Array.from(allTraits));
 
     // Process each trait
     const traitAnalyses = await Promise.all(Array.from(allTraits).map(async trait => {
@@ -71,6 +80,7 @@ export async function POST(request: NextRequest) {
           }
         }
       }
+      console.log(`[Score API] Trait '${trait}' relevant segments count:`, relevantSegments.length);
       if (relevantSegments.length === 0) {
         return {
           trait,
@@ -98,7 +108,7 @@ export async function POST(request: NextRequest) {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'gpt-4o',
+          model: 'gpt-4',
           messages: [
             { role: 'system', content: 'You are an expert interviewer.' },
             { role: 'user', content: prompt }
