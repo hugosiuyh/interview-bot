@@ -108,7 +108,7 @@ export async function POST(request: NextRequest) {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'gpt-4',
+          model: 'gpt-4o',
           messages: [
             { role: 'system', content: 'You are an expert interviewer.' },
             { role: 'user', content: prompt }

@@ -38,7 +38,7 @@ function TraitBarChart({ traits }: { traits: any[] }) {
   
   return (
     <div className="bg-white p-6 rounded-lg shadow-sm border">
-      <h3 className="text-lg font-semibold mb-4">Trait Scores</h3>
+      <h3 className="text-lg font-semibold mb-4 text-black">Trait Scores</h3>
       <div className="space-y-3">
         {validTraits.map((trait, index) => {
           const score = trait.score || 0;
@@ -131,7 +131,7 @@ function RecruiterReport({ data }: { data: any }) {
 
       {/* Job-fit Analysis */}
       <div className="bg-white p-6 rounded-lg shadow-sm border">
-        <h3 className="text-lg font-semibold mb-3">Job-fit Analysis</h3>
+        <h3 className="text-lg font-semibold mb-3 text-black">Job-fit Analysis</h3>
         <p className="text-gray-700 leading-relaxed">
           {data.overall?.overallRationale || 'No analysis available.'}
         </p>
@@ -330,7 +330,7 @@ export default function ReportPage() {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
         <div className="bg-white p-8 rounded-lg shadow-sm">
-          <div className="text-xl font-bold mb-4 text-center">Generating your report...</div>
+          <div className="text-xl font-bold mb-4 text-center text-black">Generating your report...</div>
           <div className="flex justify-center">
             <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-500"></div>
           </div>
