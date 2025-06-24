@@ -26,7 +26,7 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-lg p-8 max-w-md w-full">
-        <h1 className="text-2xl text-black font-bold text-center mb-6">Momentum Interview</h1>
+        <h1 className="text-2xl text-black font-bold text-center mb-6">Momentum Interview Bot</h1>
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-black mb-2">
